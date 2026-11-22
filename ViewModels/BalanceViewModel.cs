@@ -208,7 +208,39 @@ public class BalanceViewModel : ObservableObject
     public RelayCommand QueryMimoCommand => new(async () => await QueryMimoAsync());
     public RelayCommand QueryDsCommand => new(async () => await QueryDsAsync());
     public RelayCommand QueryAliCommand => new(async () => await QueryAliAsync());
-    public RelayCommand CheckAliCommand => new(async () => await CheckAliAsync());
+    public RelayCommand CheckAliCommand => new(OpenAkTest);
+
+    /// <summary>打开一次性校验对话框：绕开保险库直接测粘贴进来的 AK/SK，通过后可写回当前凭据。</summary>
+    private void OpenAkTest()
+    {
+        var key = SelectedAliKey;
+        var dlg = new Views.AkTestWindow(key?.Username, key?.Password)
+        {
+            Owner = System.Windows.Application.Current.MainWindow,
+        };
+        var ok = dlg.ShowDialog() == true && dlg.SaveRequested;
+        if (!ok) return;
+
+        if (key == null)
+        {
+            AliStatus = "校验通过，但没有选中的凭据可写回（请在添加凭据时选「阿里云 AccessKey（AK/SK）」）";
+            AliStatusIsError = true;
+            return;
+        }
+
+        try
+        {
+            _vault.UpdateCredentials(key.Id, dlg.ResultAk!, dlg.ResultSk!);
+            AliStatus = "校验通过并已保存新的 AK/SK，点「查询」即可取额度";
+            AliStatusIsError = false;
+            Diag.Log("ali ak saved from test dialog");
+        }
+        catch (Exception ex)
+        {
+            AliStatus = "保存失败：" + ex.Message;
+            AliStatusIsError = true;
+        }
+    }
 
     /// <summary>只校验 AK/SK 这一对（STS GetCallerIdentity），不涉及百炼权限。</summary>
     public async Task CheckAliAsync()
