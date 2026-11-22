@@ -218,6 +218,9 @@ public static class SelfTest
 
         var p3 = BalanceService.ParseAlibabaPlan(System.Text.Json.JsonDocument.Parse("""{"Data":null}""").RootElement);
         Check(o, p3.Total == null && p3.Used == null && p3.Remaining == null, "无余量字段时不编造数字");
+
+        Check(o, BalanceService.KeyStartsWithTokenPlan("sk-sp-abc123"), "sk-sp- 前缀识别为千问 Token Plan 专属密钥");
+        Check(o, !BalanceService.KeyStartsWithTokenPlan("sk-abc123"), "普通 sk- 前缀不误判");
     }
 
     // ── 6. 空闲自动锁定 / 剪贴板自动清空 判定逻辑 ───────────────────────────
@@ -254,6 +257,7 @@ public static class SelfTest
         await Probe(o, "DeepSeek user/balance", ct => svc.GetDeepseekBalanceAsync("sk-selftest-invalid-key", null, ct));
         await Probe(o, "MiMo models", async ct => (await svc.GetModelsAsync("sk-selftest-invalid-key", BalanceService.DefaultMimoSkBase, ct)).Dispose());
         await Probe(o, "阿里云百炼 models", async ct => (await svc.GetModelsAsync("sk-selftest-invalid-key", "https://dashscope.aliyuncs.com/api/v1", ct)).Dispose());
+        await Probe(o, "百炼 quotas（默认余量接口）", async ct => { await svc.GetAlibabaPlanAsync("sk-selftest-invalid-key", null, ct); });
     }
 
     private static async Task Probe(TextWriter o, string name, Func<CancellationToken, Task> call)

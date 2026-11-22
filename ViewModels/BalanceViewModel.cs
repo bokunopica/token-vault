@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Net.Http;
 using System.Windows.Threading;
 using TokenVault.Infrastructure;
 using TokenVault.Models;
@@ -288,7 +289,7 @@ public class BalanceViewModel : ObservableObject
         var key = SelectedAliKey;
         if (key == null)
         {
-            AliStatus = "没有可用凭据（先在“密钥管理”添加「阿里云百炼 Token 套餐」类别，并在“地址”填查询 URL）";
+            AliStatus = "没有可用凭据（在「密钥管理」添加「阿里云百炼 Token 套餐」类别并填 API Key，地址可不填）";
             AliHasData = false;
             return;
         }
@@ -312,7 +313,10 @@ public class BalanceViewModel : ObservableObject
         catch (Exception ex)
         {
             AliHasData = false;
-            AliStatus = "查询失败：" + ex.Message;
+            AliStatus = "查询失败：" + ex.Message
+                + (ex is HttpRequestException h && (h.Message.Contains("HTTP 401") || h.Message.Contains("HTTP 404"))
+                    ? "\n提示：该平台可能不开放余量接口，可到控制台查看，或把官方文档里的查询 URL 填到凭据「地址」。"
+                    : "");
         }
         finally
         {

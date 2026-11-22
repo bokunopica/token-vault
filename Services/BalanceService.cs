@@ -59,6 +59,10 @@ public class BalanceService
     public const string DefaultMimoSkBase = "https://api.xiaomimimo.com/v1";
     public const string DefaultDeepseekBase = "https://api.deepseek.com";
     public const string DefaultAlibabaBase = "https://dashscope.aliyuncs.com";
+    /// <summary>百炼网关上的额度接口（实测：无效密钥返回 401 InvalidApiKey → 路由存在），默认就用它，不用手填地址。</summary>
+    public const string DefaultAlibabaQuotaUrl = "https://dashscope.aliyuncs.com/api/v1/quotas";
+    /// <summary>千问 Token Plan 专属网关（sk-sp- 前缀密钥配套使用）。</summary>
+    public const string DefaultAlibabaTokenPlanBase = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
     /// <summary>百炼 OpenAI 兼容的模型列表（实测：无效密钥返回 401「Incorrect API key provided」），用于连通性测试。</summary>
     public const string AlibabaModelsPath = "/api/v1/models";
 
@@ -131,16 +135,33 @@ public class BalanceService
     public async Task<AlibabaPlanInfo> GetAlibabaPlanAsync(string apiKey, string? queryUrl, CancellationToken ct = default)
     {
         var raw = (queryUrl ?? "").Trim();
-        if (!UrlHelper.TryNormalize(raw, out var url) || IsBareHost(url))
-            throw new InvalidOperationException(
-                "阿里云百炼的套餐余量需要完整查询地址：请在凭据的「地址」字段填入官方文档中的查询 URL（含路径），"
-                + "只填域名无法查询。");
+        string url;
+        if (raw.Length == 0)
+        {
+            if (KeyStartsWithTokenPlan(apiKey))
+                throw new InvalidOperationException(
+                    "千问 Token Plan 专属密钥（sk-sp-）目前没有公开的余量接口，官方只在控制台展示。"
+                    + "如果你有查询 URL，填到凭据「地址」即可；否则请在 platform.qianwenai.com 工作台查看剩余 Credits。");
+            url = DefaultAlibabaQuotaUrl;   // 地址留空就用内置默认接口
+        }
+        else if (!UrlHelper.TryNormalize(raw, out url))
+        {
+            throw new InvalidOperationException("「地址」不是合法 URL：" + raw);
+        }
+        else if (IsBareHost(url))
+        {
+            url = url.TrimEnd('/') + "/api/v1/quotas";   // 只填了域名时自动补默认路径
+        }
         using var doc = await GetJsonAsync(url, apiKey, ct).ConfigureAwait(false);
         return ParseAlibabaPlan(doc.RootElement);
     }
 
     private static bool IsBareHost(string url)
         => Uri.TryCreate(url, UriKind.Absolute, out var u) && u.AbsolutePath.Trim('/').Length == 0;
+
+    /// <summary>sk-sp- 前缀 = 千问 Token Plan 专属密钥。</summary>
+    public static bool KeyStartsWithTokenPlan(string apiKey)
+        => apiKey.StartsWith("sk-sp", StringComparison.OrdinalIgnoreCase);
 
     private static readonly string[] TotalKeys = { "total_credits", "total_quota", "total_tokens", "total_amount", "total", "quota", "amount" };
     private static readonly string[] UsedKeys = { "used_credits", "used_quota", "used_tokens", "used_amount", "used", "consumed", "usage" };
@@ -250,11 +271,12 @@ public class BalanceService
                 }
                 case Models.KeyCategories.Alibaba:
                 {
-                    // 地址里可能填的是完整查询 URL，测试连通性只取域名
-                    var b = (string.IsNullOrWhiteSpace(baseUrl) ? DefaultAlibabaBase : baseUrl).TrimEnd('/');
-                    if (Uri.TryCreate(b, UriKind.Absolute, out var uri)) b = uri.GetLeftPart(UriPartial.Authority);
-                    using var doc = await GetJsonAsync(b + AlibabaModelsPath, apiKey, ct).ConfigureAwait(false);
-                    return (true, "连接成功：密钥有效（百炼 /api/v1/models 可访问）");
+                    // sk-sp- 是千问 Token Plan 专属 Key，只在 Token Plan 网关可用；
+                    // 其它（sk-）走百炼主网关。地址里填了完整 URL 时只取域名判断不出前缀，这里优先按 Key 前缀。
+                    using var doc = KeyStartsWithTokenPlan(apiKey)
+                        ? await GetJsonAsync(DefaultAlibabaTokenPlanBase + "/models", apiKey, ct).ConfigureAwait(false)
+                        : await GetModelsAsync(apiKey, DefaultAlibabaBase + "/api/v1", ct).ConfigureAwait(false);
+                    return (true, "连接成功：密钥有效（模型列表可访问）");
                 }
                 case Models.KeyCategories.MimoSk:
                 {
