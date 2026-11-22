@@ -1,10 +1,10 @@
 [Setup]
 AppName=TokenVault
-AppVersion=1.0.0
+AppVersion=1.1.0
 AppPublisher=TokenVault Dev (自签名开发版)
 DefaultDirName={autopf}\TokenVault
 DefaultGroupName=TokenVault
-OutputBaseFilename=TokenVault-Setup-1.0.0
+OutputBaseFilename=TokenVault-Setup-1.1.0
 OutputDir=dist
 Compression=lzma2
 SolidCompression=yes
