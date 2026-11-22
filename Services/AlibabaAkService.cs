@@ -162,10 +162,28 @@ public class AlibabaAkService
                               : "接口没有返回额度数据（该 AccessKey 可能没有订阅 Token Plan，或缺少 RAM 权限）"));
     }
 
+    /// <summary>
+    /// 只校验 AK/SK 这一对本身是否有效：调 STS GetCallerIdentity（任何 AK 都能调，不依赖百炼权限）。
+    /// 签名算法完全相同，所以这里是"密钥对不对"和"接口/权限对不对"的分水岭。
+    /// </summary>
+    public async Task<string> CheckCredentialsAsync(string ak, string sk, CancellationToken ct = default)
+    {
+        using var doc = await SendAsync(ak, sk, "GetCallerIdentity", "/",
+            Array.Empty<KeyValuePair<string, string>>(), ct,
+            host: "sts.aliyuncs.com", version: "2015-04-01").ConfigureAwait(false);
+        var root = doc.RootElement;
+        var account = GetString(root, "AccountId");
+        var arn = GetString(root, "Arn");
+        var userId = GetString(root, "UserId");
+        var who = arn ?? userId ?? "-";
+        return $"密钥有效（STS 校验通过）：账号 {account ?? "-"}，身份 {who}";
+    }
+
     // ── ACS3 签名 + HTTP ────────────────────────────────────────────────────
 
     private async Task<JsonDocument> SendAsync(string ak, string sk, string action, string path,
-        IEnumerable<KeyValuePair<string, string>> query, CancellationToken ct)
+        IEnumerable<KeyValuePair<string, string>> query, CancellationToken ct,
+        string host = Endpoint, string version = ApiVersion)
     {
         var q = string.Join("&", query
             .Select(kv => new KeyValuePair<string, string>(PercentEncode(kv.Key), PercentEncode(kv.Value)))
@@ -178,12 +196,12 @@ public class AlibabaAkService
 
         var headers = new SortedDictionary<string, string>(StringComparer.Ordinal)
         {
-            ["host"] = Endpoint,
+            ["host"] = host,
             ["x-acs-action"] = action,
             ["x-acs-content-sha256"] = emptyHash,
             ["x-acs-date"] = date,
             ["x-acs-signature-nonce"] = nonce,
-            ["x-acs-version"] = ApiVersion,
+            ["x-acs-version"] = version,
         };
 
         var canonicalRequest = BuildCanonical(method, path, q, headers, emptyHash);
@@ -193,7 +211,7 @@ public class AlibabaAkService
         var signedHeaders = string.Join(";", headers.Keys);
         var authorization = $"ACS3-HMAC-SHA256 Credential={ak.Trim()},SignedHeaders={signedHeaders},Signature={signature}";
 
-        var url = $"https://{Endpoint}{path}" + (q.Length > 0 ? "?" + q : "");
+        var url = $"https://{host}{path}" + (q.Length > 0 ? "?" + q : "");
         using var req = new HttpRequestMessage(System.Net.Http.HttpMethod.Get, url);
         foreach (var h in headers) req.Headers.TryAddWithoutValidation(h.Key, h.Value);
         req.Headers.TryAddWithoutValidation("Authorization", authorization);
@@ -285,7 +303,10 @@ public class AlibabaAkService
             Diag.Log("ali ak sign - first diff at line " + (i + 1) + ": server=[" + s + "] local=[" + o + "]");
             return "签名与服务端不一致，第一处差异：\n" + detail;
         }
-        return "服务端与本机的规范请求**逐字一致**，说明请求构造没问题 —— 是 AccessKey Secret 本身不对（被截断/复制成了别的字段/已轮换）。";
+        return "服务端与本机的规范请求**逐字一致** → 请求构造没问题，是 AccessKey Secret 不对：\n"
+               + "• AK 与 SK 不是同一对（阿里云不回显旧 Secret，最容易发生）\n"
+               + "• 或 Secret 复制时有字符被改（大小写/0 与 O 等）\n"
+               + "建议重新创建一对 AccessKey，ID 和 Secret 两个字段一起更新。";
     }
 
     private static JsonElement? GetData(JsonElement root)

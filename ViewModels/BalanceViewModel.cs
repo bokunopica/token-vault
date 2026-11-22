@@ -208,6 +208,39 @@ public class BalanceViewModel : ObservableObject
     public RelayCommand QueryMimoCommand => new(async () => await QueryMimoAsync());
     public RelayCommand QueryDsCommand => new(async () => await QueryDsAsync());
     public RelayCommand QueryAliCommand => new(async () => await QueryAliAsync());
+    public RelayCommand CheckAliCommand => new(async () => await CheckAliAsync());
+
+    /// <summary>只校验 AK/SK 这一对（STS GetCallerIdentity），不涉及百炼权限。</summary>
+    public async Task CheckAliAsync()
+    {
+        var key = SelectedAliKey;
+        if (key == null || string.IsNullOrEmpty(key.Username) || string.IsNullOrEmpty(key.Password))
+        {
+            AliStatus = "校验需要 AK/SK：账号栏填 AccessKey ID，密码栏填 AccessKey Secret";
+            AliStatusIsError = true;
+            return;
+        }
+        AliStatus = "校验中…";
+        AliStatusIsError = false;
+        IsBusy = true;
+        try
+        {
+            var msg = await _alibabaAk.CheckCredentialsAsync(key.Username, key.Password);
+            AliStatus = msg;
+            AliStatusIsError = false;
+            Diag.Log("ali ak check ok: " + msg);
+        }
+        catch (Exception ex)
+        {
+            AliStatus = "校验失败：" + ex.Message;
+            AliStatusIsError = true;
+            Diag.Log("ali ak check failed: " + ex.Message);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
 
     public async Task RefreshAllAsync()
     {
