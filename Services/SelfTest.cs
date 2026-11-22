@@ -245,6 +245,34 @@ public static class SelfTest
             Array.Empty<(string?, double?, double?, long?, long?)>(),
             Array.Empty<(double?, double?, long?, long?)>());
         Check(o, q3.Total == null && q3.Remaining == null, "两组数据都为空时不编造额度");
+
+        // ACS3 规范请求：与阿里云报错里回显的 canonical request 逐字比对（提前打乱头顺序以验证排序）
+        const string emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        var built = AlibabaAkService.BuildCanonical("GET", "/tokenplan/subscription/shared-packages", "PageSize=50",
+            new (string Key, string Value)[]
+            {
+                ("x-acs-version", "2026-02-10"),
+                ("host", "modelstudio.cn-beijing.aliyuncs.com"),
+                ("x-acs-signature-nonce", "8b141444-900a-40e1-94f0-0e1fa1d1f76f"),
+                ("x-acs-action", "ListSubscriptionSharedPackages"),
+                ("x-acs-date", "2026-11-22T18:18:22Z"),
+                ("x-acs-content-sha256", emptyHash),
+            }
+            .Select(h => new KeyValuePair<string, string>(h.Key, h.Value)),
+            emptyHash);
+        const string expected =
+            "GET\n/tokenplan/subscription/shared-packages\nPageSize=50\n"
+            + "host:modelstudio.cn-beijing.aliyuncs.com\n"
+            + "x-acs-action:ListSubscriptionSharedPackages\n"
+            + "x-acs-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"
+            + "x-acs-date:2026-11-22T18:18:22Z\n"
+            + "x-acs-signature-nonce:8b141444-900a-40e1-94f0-0e1fa1d1f76f\n"
+            + "x-acs-version:2026-02-10\n\n"
+            + "host;x-acs-action;x-acs-content-sha256;x-acs-date;x-acs-signature-nonce;x-acs-version\n"
+            + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        Check(o, built == expected,
+            built == expected ? "ACS3 规范请求与阿里云回显逐字一致（头排序/空行/分隔符）"
+                              : "ACS3 规范请求与阿里云回显不一致：\n" + built);
     }
 
     // ── 6. 空闲自动锁定 / 剪贴板自动清空 判定逻辑 ───────────────────────────

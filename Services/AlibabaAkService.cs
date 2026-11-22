@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Net.Http;
-using AlibabaCloud.SDK.ModelStudio20260210;
-using AlibabaCloud.SDK.ModelStudio20260210.Models;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace TokenVault.Services;
 
@@ -40,14 +42,21 @@ public class AlibabaQuota
 }
 
 /// <summary>
-/// 阿里云 Token Plan 额度查询（官方 OpenAPI，2026-02-10 版）：需要 AccessKey（AK/SK），
-/// 不支持 sk- / sk-sp- 这类 API Key —— 官方文档明确要求 RAM 用户 AccessKey + ACS3 签名。
-///   GET /tokenplan/subscription/shared-packages  → 权益实例（CREDITS 的 CycleTotalValue / CycleSurplusValue）
-///   GET /tokenplan/subscription/stats            → 席位额度（SeatCredits / SeatRemainingCredits）
+/// 阿里云 Token Plan 额度查询（官方 OpenAPI 2026-02-10）：必须用 AccessKey + ACS3-HMAC-SHA256 签名，
+/// 官方文档明确"不支持 Authorization: Bearer"，所以 sk- / sk-sp- 这类 API Key 查不了额度。
+///   GET /tokenplan/subscription/shared-packages → 权益实例（CREDITS 的 CycleTotalValue / CycleSurplusValue）
+///   GET /tokenplan/subscription/stats           → 席位额度（SeatCredits / SeatRemainingCredits）
+/// 签名自己算（官方 SDK 2.2.5 实测会发错 x-acs-content-sha256，导致 signature mismatch）。
 /// </summary>
 public class AlibabaAkService
 {
     public const string Endpoint = "modelstudio.cn-beijing.aliyuncs.com";
+    public const string ApiVersion = "2026-02-10";
+
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
+
+    /// <summary>上一次请求算出的规范请求（排错用：服务端报 signature mismatch 时会回显它自己的，两者可直接比对）。</summary>
+    public string? LastCanonicalRequest { get; private set; }
 
     /// <summary>把权益/席位里的数值汇总成额度（纯函数，便于自检）。</summary>
     public static AlibabaQuota Aggregate(
@@ -91,83 +100,203 @@ public class AlibabaAkService
         => ms is > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(ms.Value).LocalDateTime : null;
 
     public async Task<AlibabaQuota> QueryAsync(string accessKeyId, string accessKeySecret, CancellationToken ct = default)
-        => await Task.Run(() => Query(accessKeyId, accessKeySecret), ct).ConfigureAwait(false);
-
-    private static AlibabaQuota Query(string ak, string sk)
     {
-        var config = new AlibabaCloud.OpenApiClient.Models.Config
-        {
-            AccessKeyId = ak.Trim(),
-            AccessKeySecret = sk.Trim(),
-            Endpoint = Endpoint,
-            Protocol = "https",
-            RegionId = "cn-beijing",
-            ConnectTimeout = 15000,
-            ReadTimeout = 20000,
-        };
-        var client = new Client(config);
-
         var equities = new List<(string?, double?, double?, long?, long?)>();
         var seats = new List<(double?, double?, long?, long?)>();
-        string? lastError = null;
+        var errors = new List<string>();
+        long? subStart = null, subEnd = null;
 
-        // 1) 共享包 / 权益实例：个人版与团队版都能拿到 Credits 总额与剩余
         try
         {
-            var resp = client.ListSubscriptionSharedPackages(new ListSubscriptionSharedPackagesRequest { PageSize = 50 });
-            var data = resp.Body?.Data;
-            if (data?.Items != null)
-                foreach (var item in data.Items)
+            using var doc = await SendAsync(accessKeyId, accessKeySecret,
+                "ListSubscriptionSharedPackages", "/tokenplan/subscription/shared-packages",
+                new[] { new KeyValuePair<string, string>("PageSize", "50") }, ct).ConfigureAwait(false);
+            var data = GetData(doc.RootElement);
+            if (data is { } d && d.TryGetProperty("Items", out var items) && items.ValueKind == JsonValueKind.Array)
+                foreach (var item in items.EnumerateArray())
                 {
-                    if (item.EquityList == null) continue;
-                    foreach (var eq in item.EquityList)
-                        equities.Add((eq.EquityType, eq.CycleTotalValue, eq.CycleSurplusValue, eq.CycleStartTime, eq.CycleEndTime));
+                    if (!item.TryGetProperty("EquityList", out var eqs) || eqs.ValueKind != JsonValueKind.Array) continue;
+                    foreach (var eq in eqs.EnumerateArray())
+                        equities.Add((GetString(eq, "EquityType"), GetDouble(eq, "CycleTotalValue"),
+                            GetDouble(eq, "CycleSurplusValue"), GetLong(eq, "CycleStartTime"), GetLong(eq, "CycleEndTime")));
                 }
         }
-        catch (Exception ex) { lastError = Describe(ex); }
+        catch (Exception ex) { errors.Add("共享包：" + ex.Message); }
 
-        // 2) 席位统计：团队版
-        long? subStart = null, subEnd = null;
         try
         {
-            var resp = client.GetSubscriptionStats(new GetSubscriptionStatsRequest());
-            var data = resp.Body?.Data;
-            subStart = data?.SubscriptionStartTime;
-            subEnd = data?.SubscriptionEndTime;
-            if (data?.Items != null)
-                foreach (var it in data.Items)
-                    seats.Add((it.SeatCredits, it.SeatRemainingCredits, it.SeatRefreshTime, null));
+            using var doc = await SendAsync(accessKeyId, accessKeySecret,
+                "GetSubscriptionStats", "/tokenplan/subscription/stats",
+                Array.Empty<KeyValuePair<string, string>>(), ct).ConfigureAwait(false);
+            var data = GetData(doc.RootElement);
+            if (data is { } d)
+            {
+                subStart = GetLong(d, "SubscriptionStartTime");
+                subEnd = GetLong(d, "SubscriptionEndTime");
+                if (d.TryGetProperty("Items", out var items) && items.ValueKind == JsonValueKind.Array)
+                    foreach (var it in items.EnumerateArray())
+                        seats.Add((GetDouble(it, "SeatCredits"), GetDouble(it, "SeatRemainingCredits"),
+                            GetLong(it, "SeatRefreshTime"), null));
+            }
         }
-        catch (Exception ex) { lastError ??= Describe(ex); }
+        catch (Exception ex) { errors.Add("席位：" + ex.Message); }
 
         var quota = Aggregate(equities, seats);
         if (quota.Total != null || quota.Remaining != null)
         {
-            if (quota.PeriodStart == null) quota = new AlibabaQuota
-            {
-                Total = quota.Total,
-                Remaining = quota.Remaining,
-                Used = quota.Used,
-                PeriodStart = FromMs(subStart),
-                PeriodEnd = FromMs(subEnd),
-                Source = quota.Source,
-            };
+            if (quota.PeriodStart == null)
+                quota = new AlibabaQuota
+                {
+                    Total = quota.Total,
+                    Remaining = quota.Remaining,
+                    Used = quota.Used,
+                    PeriodStart = FromMs(subStart),
+                    PeriodEnd = FromMs(subEnd),
+                    Source = quota.Source,
+                };
             return quota;
         }
+
         throw new InvalidOperationException(
-            "阿里云接口没有返回额度数据" + (lastError != null ? "：" + lastError : "（请确认该 AccessKey 已订阅 Token Plan 且有 RAM 权限）"));
+            (errors.Count > 0 ? string.Join("；", errors)
+                              : "接口没有返回额度数据（该 AccessKey 可能没有订阅 Token Plan，或缺少 RAM 权限）"));
     }
 
-    /// <summary>把 SDK 的异常整理成一句人话。</summary>
-    private static string Describe(Exception ex)
+    // ── ACS3 签名 + HTTP ────────────────────────────────────────────────────
+
+    private async Task<JsonDocument> SendAsync(string ak, string sk, string action, string path,
+        IEnumerable<KeyValuePair<string, string>> query, CancellationToken ct)
     {
-        var msg = ex.InnerException?.Message ?? ex.Message;
-        if (msg.Contains("Specified access key is not found"))
-            return "AccessKey 无效（AK/SK 填错，或已被禁用）";
-        if (msg.Contains("Forbidden") || msg.Contains("NoPermission"))
-            return "该 AccessKey 没有调用权限（需给 RAM 用户授予百炼/ModelStudio 相关权限）";
-        if (msg.Contains("timeout", StringComparison.OrdinalIgnoreCase) || ex is HttpRequestException)
-            return "网络不可达：" + msg;
-        return msg;
+        var q = string.Join("&", query
+            .Select(kv => new KeyValuePair<string, string>(PercentEncode(kv.Key), PercentEncode(kv.Value)))
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv => $"{kv.Key}={kv.Value}"));
+
+        var date = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+        var nonce = Guid.NewGuid().ToString();
+        var emptyHash = HexSha256(Array.Empty<byte>());
+
+        var headers = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["host"] = Endpoint,
+            ["x-acs-action"] = action,
+            ["x-acs-content-sha256"] = emptyHash,
+            ["x-acs-date"] = date,
+            ["x-acs-signature-nonce"] = nonce,
+            ["x-acs-version"] = ApiVersion,
+        };
+
+        var canonicalRequest = BuildCanonical(method, path, q, headers, emptyHash);
+        LastCanonicalRequest = canonicalRequest;
+        var stringToSign = $"ACS3-HMAC-SHA256\n{date}\n{HexSha256(Encoding.UTF8.GetBytes(canonicalRequest))}";
+        var signature = HexHmacSha256(stringToSign, sk.Trim());
+        var signedHeaders = string.Join(";", headers.Keys);
+        var authorization = $"ACS3-HMAC-SHA256 Credential={ak.Trim()},SignedHeaders={signedHeaders},Signature={signature}";
+
+        var url = $"https://{Endpoint}{path}" + (q.Length > 0 ? "?" + q : "");
+        using var req = new HttpRequestMessage(System.Net.Http.HttpMethod.Get, url);
+        foreach (var h in headers) req.Headers.TryAddWithoutValidation(h.Key, h.Value);
+        req.Headers.TryAddWithoutValidation("Authorization", authorization);
+        req.Headers.TryAddWithoutValidation("Accept", "application/json");
+
+        using var resp = await Http.SendAsync(req, ct).ConfigureAwait(false);
+        var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException(DescribeHttpError((int)resp.StatusCode, body, canonicalRequest));
+
+        return JsonDocument.Parse(body);
     }
+
+    private const string method = "GET";
+
+    /// <summary>按 ACS3 规范拼规范请求（自检会拿阿里云报错里回显的那份逐字比对）。</summary>
+    public static string BuildCanonical(string method, string path, string canonicalQuery,
+        IEnumerable<KeyValuePair<string, string>> headers, string hashedPayload)
+    {
+        var sorted = headers.OrderBy(h => h.Key, StringComparer.Ordinal).ToList();
+        var sb = new StringBuilder();
+        foreach (var h in sorted) sb.Append(h.Key).Append(':').Append(h.Value.Trim()).Append('\n');
+        var signedHeaders = string.Join(";", sorted.Select(h => h.Key));
+        return $"{method}\n{path}\n{canonicalQuery}\n{sb}\n{signedHeaders}\n{hashedPayload}";
+    }
+
+    private static string DescribeHttpError(int status, string body, string canonicalRequest)
+    {
+        string? code = null, message = null, requestId = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var r = doc.RootElement;
+            code = GetString(r, "Code");
+            message = GetString(r, "Message");
+            requestId = GetString(r, "RequestId");
+        }
+        catch (JsonException) { /* 非 JSON 错误体 */ }
+
+        var text = $"HTTP {status}"
+                   + (code != null ? $" {code}" : "")
+                   + (message != null ? "：" + message : "")
+                   + (requestId != null ? $"（RequestId {requestId}）" : "");
+
+        if (message?.Contains("Specified access key is not found") == true)
+            return "AccessKey 无效：AK/SK 填错了，或该 AK 已被禁用。";
+        if (message?.Contains("Forbidden") == true || code is "Forbidden" or "NoPermission")
+            return "该 AccessKey 没有调用权限：给对应 RAM 用户授予 AliyunTokenPlanReadOnlyAccess（+ AliyunBSSReadOnlyAccess）。";
+        if (message?.Contains("does not match our calculation") == true)
+            return text + "\n本机签名用的规范请求：\n" + canonicalRequest;
+        if (string.IsNullOrEmpty(body))
+            return text;
+
+        var snippet = body.Length > 400 ? body[..400] + "…" : body;
+        return text + "\n" + snippet;
+    }
+
+    private static JsonElement? GetData(JsonElement root)
+        => root.ValueKind == JsonValueKind.Object
+           && root.TryGetProperty("Data", out var data)
+           && data.ValueKind == JsonValueKind.Object
+            ? data : null;
+
+    private static string? GetString(JsonElement e, string name)
+        => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static double? GetDouble(JsonElement e, string name)
+    {
+        if (!e.TryGetProperty(name, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number => v.GetDouble(),
+            JsonValueKind.String when double.TryParse(v.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var d) => d,
+            _ => null,
+        };
+    }
+
+    private static long? GetLong(JsonElement e, string name)
+    {
+        if (!e.TryGetProperty(name, out var v)) return null;
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number => v.TryGetInt64(out var l) ? l : null,
+            JsonValueKind.String when long.TryParse(v.GetString(), out var l) => l,
+            _ => null,
+        };
+    }
+
+    private static string PercentEncode(string s)
+    {
+        var sb = new StringBuilder();
+        foreach (var b in Encoding.UTF8.GetBytes(s))
+        {
+            var c = (char)b;
+            if (char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' or '~') sb.Append(c);
+            else sb.Append('%').Append(b.ToString("X2"));
+        }
+        return sb.ToString();
+    }
+
+    private static string HexSha256(byte[] data) => Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant();
+
+    private static string HexHmacSha256(string data, string key)
+        => Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(key), Encoding.UTF8.GetBytes(data))).ToLowerInvariant();
 }
