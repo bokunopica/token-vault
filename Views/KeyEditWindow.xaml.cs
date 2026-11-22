@@ -22,6 +22,7 @@ public partial class KeyEditWindow : Window
         new(KeyCategories.DisplayName(KeyCategories.MimoSk), KeyCategories.MimoSk),
         new(KeyCategories.DisplayName(KeyCategories.DeepSeek), KeyCategories.DeepSeek),
         new(KeyCategories.DisplayName(KeyCategories.Alibaba), KeyCategories.Alibaba),
+        new(KeyCategories.DisplayName(KeyCategories.AliyunAk), KeyCategories.AliyunAk),
         new(KeyCategories.DisplayName(KeyCategories.Other), KeyCategories.Other),
     };
 

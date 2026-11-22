@@ -221,6 +221,30 @@ public static class SelfTest
 
         Check(o, BalanceService.KeyStartsWithTokenPlan("sk-sp-abc123"), "sk-sp- 前缀识别为千问 Token Plan 专属密钥");
         Check(o, !BalanceService.KeyStartsWithTokenPlan("sk-abc123"), "普通 sk- 前缀不误判");
+
+        // 阿里云 AK 额度汇总（纯函数）
+        var q1 = AlibabaAkService.Aggregate(
+            new (string?, double?, double?, long?, long?)[]
+            {
+                ("CREDITS", 20000, 5000, 1_763_000_000_000, 1_765_678_400_000),
+                ("SPN", 999, 999, null, null),
+            },
+            Array.Empty<(double?, double?, long?, long?)>());
+        Check(o, q1.Total == 20000 && q1.Remaining == 5000 && q1.Used == 15000,
+            $"共享包 Credits 汇总：总量 20000 / 剩余 5000 / 已用 15000（实际 {q1.Total}/{q1.Remaining}/{q1.Used}）");
+        Check(o, q1.UsedPct == 75, $"已用百分比 75（实际 {q1.UsedPct}）");
+        Check(o, q1.PeriodStart != null && q1.PeriodEnd != null, "周期时间从毫秒解析成功");
+
+        var q2 = AlibabaAkService.Aggregate(
+            Array.Empty<(string?, double?, double?, long?, long?)>(),
+            new (double?, double?, long?, long?)[] { (1000, 400, null, null), (500, 100, null, null) });
+        Check(o, q2.Total == 1500 && q2.Remaining == 500 && q2.Used == 1000,
+            $"无共享包时回退席位额度并累加（实际 {q2.Total}/{q2.Remaining}）");
+
+        var q3 = AlibabaAkService.Aggregate(
+            Array.Empty<(string?, double?, double?, long?, long?)>(),
+            Array.Empty<(double?, double?, long?, long?)>());
+        Check(o, q3.Total == null && q3.Remaining == null, "两组数据都为空时不编造额度");
     }
 
     // ── 6. 空闲自动锁定 / 剪贴板自动清空 判定逻辑 ───────────────────────────

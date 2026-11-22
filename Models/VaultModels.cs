@@ -45,6 +45,7 @@ public static class KeyCategories
     public const string MimoSk = "mimo-sk";       // sk-… 普通 key
     public const string DeepSeek = "deepseek";    // sk-… DeepSeek key
     public const string Alibaba = "alibaba";      // 阿里云百炼 Token 套餐 / 资源包
+    public const string AliyunAk = "aliyun-ak";   // 阿里云 AccessKey（账号=AK，密码=SK），用来查 Token Plan 额度
     public const string Account = "account";      // 账号密码（网站/控制台/SSH 等）
     public const string ApiKey = "api-key";       // 通用 API 密钥
     public const string Database = "database";    // 数据库 / 连接串
@@ -56,6 +57,7 @@ public static class KeyCategories
         MimoSk => "MiMo API (sk-)",
         DeepSeek => "DeepSeek (sk-)",
         Alibaba => "阿里云百炼 Token 套餐",
+        AliyunAk => "阿里云 AccessKey（AK/SK）",
         Account => "账号密码",
         ApiKey => "API 密钥",
         Database => "数据库",

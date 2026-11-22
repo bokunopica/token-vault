@@ -11,6 +11,7 @@ public class BalanceViewModel : ObservableObject
 {
     private readonly VaultStore _vault;
     private readonly BalanceService _balance = new();
+    private readonly AlibabaAkService _alibabaAk = new();
     private readonly DispatcherTimer _timer;
 
     private bool _isBusy;
@@ -42,6 +43,7 @@ public class BalanceViewModel : ObservableObject
 
     // ── 阿里云百炼 ─────────────────────────────────────────────────────────
     private string _aliStatus = "选择密钥后点击“查询”";
+    private bool _aliStatusIsError;
     private bool _aliHasData;
     private string _aliPlanCode = "";
     private string _aliPeriod = "";
@@ -90,7 +92,7 @@ public class BalanceViewModel : ObservableObject
         AliKeys.Clear();
         foreach (var e in _vault.Data.Entries
                      .Where(e => !string.IsNullOrEmpty(e.PrimarySecret))
-                     .OrderByDescending(e => e.Category == KeyCategories.Alibaba)
+                     .OrderByDescending(e => e.Category == KeyCategories.Alibaba || e.Category == KeyCategories.AliyunAk)
                      .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase))
             AliKeys.Add(e);
 
@@ -190,6 +192,8 @@ public class BalanceViewModel : ObservableObject
 
     // 阿里云百炼 绑定
     public string AliStatus { get => _aliStatus; private set => SetProperty(ref _aliStatus, value); }
+    /// <summary>状态行是否为错误（用于把提示染红，避免"点了没反应"的错觉）。</summary>
+    public bool AliStatusIsError { get => _aliStatusIsError; private set => SetProperty(ref _aliStatusIsError, value); }
     public bool AliHasData { get => _aliHasData; private set => SetProperty(ref _aliHasData, value); }
     public string AliPlanCode { get => _aliPlanCode; private set => SetProperty(ref _aliPlanCode, value); }
     public string AliPeriod { get => _aliPeriod; private set => SetProperty(ref _aliPeriod, value); }
@@ -289,34 +293,62 @@ public class BalanceViewModel : ObservableObject
         var key = SelectedAliKey;
         if (key == null)
         {
-            AliStatus = "没有可用凭据（在「密钥管理」添加「阿里云百炼 Token 套餐」类别并填 API Key，地址可不填）";
+            AliStatus = "没有可用凭据（添加「阿里云 AccessKey（AK/SK）」类别，AK 填账号、SK 填密码）";
+            AliStatusIsError = true;
             AliHasData = false;
+            Diag.Log("ali query skipped: no key selected");
             return;
         }
+        var akMode = !string.IsNullOrEmpty(key.Username) && !string.IsNullOrEmpty(key.Password);
+        AliStatus = "查询中…";
+        AliStatusIsError = false;
+        Diag.Log($"ali query start: mode={(akMode ? "AK" : "APIKey/URL")}, prefix={(key.ApiKey.Length >= 5 ? key.ApiKey[..5] : "-")}");
         IsBusy = true;
         try
         {
-            var plan = await _balance.GetAlibabaPlanAsync(key.PrimarySecret, key.BaseUrl);
-            AliPlanCode = string.IsNullOrEmpty(plan.PlanCode) ? "" : "套餐：" + plan.PlanCode;
-            AliPeriod = plan.Period ?? "";
-            AliUsed = plan.Used?.ToString("N0") ?? "–";
-            AliTotal = plan.Total?.ToString("N0") ?? "–";
-            AliRemaining = plan.Remaining?.ToString("N0") ?? "–";
-            AliPct = plan.UsedPct is { } pct ? $"已用 {pct}%" : "";
-            AliProgress = plan.UsedPct ?? 0;
-            AliRaw = plan.Total == null && plan.Used == null && plan.Remaining == null
-                ? "未能识别出余量字段，接口原始返回：" + plan.RawSnippet
-                : "";
-            AliHasData = true;
-            AliStatus = "查询成功 " + DateTime.Now.ToString("HH:mm:ss");
+            if (akMode)
+            {
+                var quota = await _alibabaAk.QueryAsync(key.Username, key.Password);
+                AliPlanCode = "来源：" + quota.Source;
+                AliPeriod = quota.PeriodStart is { } ps && quota.PeriodEnd is { } pe
+                    ? $"周期 {ps:yyyy-MM-dd} ~ {pe:yyyy-MM-dd}"
+                    : "";
+                AliUsed = quota.Used?.ToString("N0") ?? "–";
+                AliTotal = quota.Total?.ToString("N0") ?? "–";
+                AliRemaining = quota.Remaining?.ToString("N0") ?? "–";
+                AliPct = quota.UsedPct is { } ap ? $"已用 {ap}%" : "";
+                AliProgress = quota.UsedPct ?? 0;
+                AliRaw = "";
+                AliHasData = true;
+                AliStatusIsError = false;
+                AliStatus = "查询成功 " + DateTime.Now.ToString("HH:mm:ss") + "（" + quota.Source + "）";
+                Diag.Log($"ali ak query ok: total={quota.Total}, remaining={quota.Remaining}");
+            }
+            else
+            {
+                var plan = await _balance.GetAlibabaPlanAsync(key.PrimarySecret, key.BaseUrl);
+                AliPlanCode = string.IsNullOrEmpty(plan.PlanCode) ? "" : "套餐：" + plan.PlanCode;
+                AliPeriod = plan.Period ?? "";
+                AliUsed = plan.Used?.ToString("N0") ?? "–";
+                AliTotal = plan.Total?.ToString("N0") ?? "–";
+                AliRemaining = plan.Remaining?.ToString("N0") ?? "–";
+                AliPct = plan.UsedPct is { } pct ? $"已用 {pct}%" : "";
+                AliProgress = plan.UsedPct ?? 0;
+                AliRaw = plan.Total == null && plan.Used == null && plan.Remaining == null
+                    ? "未能识别出余量字段，接口原始返回：" + plan.RawSnippet
+                    : "";
+                AliHasData = true;
+                AliStatus = "查询成功 " + DateTime.Now.ToString("HH:mm:ss");
+                AliStatusIsError = false;
+                Diag.Log($"ali query ok: total={plan.Total}, used={plan.Used}, remaining={plan.Remaining}");
+            }
         }
         catch (Exception ex)
         {
             AliHasData = false;
-            AliStatus = "查询失败：" + ex.Message
-                + (ex is HttpRequestException h && (h.Message.Contains("HTTP 401") || h.Message.Contains("HTTP 404"))
-                    ? "\n提示：该平台可能不开放余量接口，可到控制台查看，或把官方文档里的查询 URL 填到凭据「地址」。"
-                    : "");
+            AliStatusIsError = true;
+            Diag.Log("ali query failed: " + ex.Message);
+            AliStatus = "查询失败：" + ex.Message;
         }
         finally
         {
