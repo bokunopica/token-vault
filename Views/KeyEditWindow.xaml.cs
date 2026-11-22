@@ -21,8 +21,6 @@ public partial class KeyEditWindow : Window
         new(KeyCategories.DisplayName(KeyCategories.MimoPlan), KeyCategories.MimoPlan),
         new(KeyCategories.DisplayName(KeyCategories.MimoSk), KeyCategories.MimoSk),
         new(KeyCategories.DisplayName(KeyCategories.DeepSeek), KeyCategories.DeepSeek),
-        new(KeyCategories.DisplayName(KeyCategories.Alibaba), KeyCategories.Alibaba),
-        new(KeyCategories.DisplayName(KeyCategories.AliyunAk), KeyCategories.AliyunAk),
         new(KeyCategories.DisplayName(KeyCategories.Other), KeyCategories.Other),
     };
 
@@ -125,8 +123,7 @@ public partial class KeyEditWindow : Window
                 "确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (r != MessageBoxResult.Yes) return;
         }
-        if ((cat == KeyCategories.MimoPlan || cat == KeyCategories.DeepSeek
-             || cat == KeyCategories.MimoSk || cat == KeyCategories.Alibaba)
+        if (cat == KeyCategories.MimoPlan || cat == KeyCategories.DeepSeek || cat == KeyCategories.MimoSk
             && apiKey.Length == 0)
         {
             MessageBox.Show(this, "该类别用于“余量查询”，必须填写 API Key。", "保存失败",

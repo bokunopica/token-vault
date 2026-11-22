@@ -23,7 +23,6 @@ public static class SelfTest
         TestVaultStore(o);
         TestTrashLifecycle(o);
         TestConsumptionMath(o);
-        TestAlibabaParse(o);
         TestIdleAndClipboard(o);
         TestLiveHttp(o).GetAwaiter().GetResult();
 
@@ -196,90 +195,11 @@ public static class SelfTest
         }
     }
 
-    // ── 5. 阿里云百炼返回 JSON 的自适应解析 ─────────────────────────────────
-
-    private static void TestAlibabaParse(TextWriter o)
-    {
-        o.WriteLine("[5] 阿里云百炼返回 JSON 自适应解析");
-        const string nested = """
-        {"data":{"plan_code":"bailian-token-pro","quota":{"total_credits":"2000000","used_credits":500000,"remaining_credits":1500000},"period":{"start_at":"2026-11-01","end_at":"2026-12-01"}}}
-        """;
-        var p1 = BalanceService.ParseAlibabaPlan(System.Text.Json.JsonDocument.Parse(nested).RootElement);
-        Check(o, p1.Total == 2000000 && p1.Used == 500000 && p1.Remaining == 1500000,
-            $"嵌套 + 字符串数字：总量/已用/剩余解析正确（{p1.Total}/{p1.Used}/{p1.Remaining}）");
-        Check(o, p1.UsedPct == 25, $"已用百分比 = 25（实际 {p1.UsedPct}）");
-        Check(o, p1.PlanCode == "bailian-token-pro" && p1.Period?.Contains("2026-12-01") == true,
-            "套餐名与周期解析正确");
-
-        const string pascal = """{"Success":true,"Data":{"Total":1000,"Remaining":250}}""";
-        var p2 = BalanceService.ParseAlibabaPlan(System.Text.Json.JsonDocument.Parse(pascal).RootElement);
-        Check(o, p2.Total == 1000 && p2.Remaining == 250 && p2.Used == 750,
-            $"PascalCase 字段 + 缺已用时反推：已用 = 750（实际 {p2.Used}）");
-
-        var p3 = BalanceService.ParseAlibabaPlan(System.Text.Json.JsonDocument.Parse("""{"Data":null}""").RootElement);
-        Check(o, p3.Total == null && p3.Used == null && p3.Remaining == null, "无余量字段时不编造数字");
-
-        Check(o, BalanceService.KeyStartsWithTokenPlan("sk-sp-abc123"), "sk-sp- 前缀识别为千问 Token Plan 专属密钥");
-        Check(o, !BalanceService.KeyStartsWithTokenPlan("sk-abc123"), "普通 sk- 前缀不误判");
-
-        // 阿里云 AK 额度汇总（纯函数）
-        var q1 = AlibabaAkService.Aggregate(
-            new (string?, double?, double?, long?, long?)[]
-            {
-                ("CREDITS", 20000, 5000, 1_763_000_000_000, 1_765_678_400_000),
-                ("SPN", 999, 999, null, null),
-            },
-            Array.Empty<(double?, double?, long?, long?)>());
-        Check(o, q1.Total == 20000 && q1.Remaining == 5000 && q1.Used == 15000,
-            $"共享包 Credits 汇总：总量 20000 / 剩余 5000 / 已用 15000（实际 {q1.Total}/{q1.Remaining}/{q1.Used}）");
-        Check(o, q1.UsedPct == 75, $"已用百分比 75（实际 {q1.UsedPct}）");
-        Check(o, q1.PeriodStart != null && q1.PeriodEnd != null, "周期时间从毫秒解析成功");
-
-        var q2 = AlibabaAkService.Aggregate(
-            Array.Empty<(string?, double?, double?, long?, long?)>(),
-            new (double?, double?, long?, long?)[] { (1000, 400, null, null), (500, 100, null, null) });
-        Check(o, q2.Total == 1500 && q2.Remaining == 500 && q2.Used == 1000,
-            $"无共享包时回退席位额度并累加（实际 {q2.Total}/{q2.Remaining}）");
-
-        var q3 = AlibabaAkService.Aggregate(
-            Array.Empty<(string?, double?, double?, long?, long?)>(),
-            Array.Empty<(double?, double?, long?, long?)>());
-        Check(o, q3.Total == null && q3.Remaining == null, "两组数据都为空时不编造额度");
-
-        // ACS3 规范请求：与阿里云报错里回显的 canonical request 逐字比对（提前打乱头顺序以验证排序）
-        const string emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        var built = AlibabaAkService.BuildCanonical("GET", "/tokenplan/subscription/shared-packages", "PageSize=50",
-            new (string Key, string Value)[]
-            {
-                ("x-acs-version", "2026-02-10"),
-                ("host", "modelstudio.cn-beijing.aliyuncs.com"),
-                ("x-acs-signature-nonce", "8b141444-900a-40e1-94f0-0e1fa1d1f76f"),
-                ("x-acs-action", "ListSubscriptionSharedPackages"),
-                ("x-acs-date", "2026-11-22T18:18:22Z"),
-                ("x-acs-content-sha256", emptyHash),
-            }
-            .Select(h => new KeyValuePair<string, string>(h.Key, h.Value)),
-            emptyHash);
-        const string expected =
-            "GET\n/tokenplan/subscription/shared-packages\nPageSize=50\n"
-            + "host:modelstudio.cn-beijing.aliyuncs.com\n"
-            + "x-acs-action:ListSubscriptionSharedPackages\n"
-            + "x-acs-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"
-            + "x-acs-date:2026-11-22T18:18:22Z\n"
-            + "x-acs-signature-nonce:8b141444-900a-40e1-94f0-0e1fa1d1f76f\n"
-            + "x-acs-version:2026-02-10\n\n"
-            + "host;x-acs-action;x-acs-content-sha256;x-acs-date;x-acs-signature-nonce;x-acs-version\n"
-            + "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        Check(o, built == expected,
-            built == expected ? "ACS3 规范请求与阿里云回显逐字一致（头排序/空行/分隔符）"
-                              : "ACS3 规范请求与阿里云回显不一致：\n" + built);
-    }
-
-    // ── 6. 空闲自动锁定 / 剪贴板自动清空 判定逻辑 ───────────────────────────
+    // ── 5. 空闲自动锁定 / 剪贴板自动清空 判定逻辑 ───────────────────────────
 
     private static void TestIdleAndClipboard(TextWriter o)
     {
-        o.WriteLine("[6] 空闲自动锁定 / 剪贴板自动清空 判定逻辑");
+        o.WriteLine("[5] 空闲自动锁定 / 剪贴板自动清空 判定逻辑");
         var idle = TimeSpan.FromSeconds(10);
         var watcher = new IdleWatcher(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(1), () => idle);
         Check(o, watcher.PollOnce(), "空闲 10s ≥ 阈值 5s → 触发锁定");
@@ -298,18 +218,16 @@ public static class SelfTest
         Check(o, !ClipboardGuard.ShouldClear("secret", null), "没有待清理的敏感值 → 不动");
     }
 
-    // ── 7. 真实 HTTP 探测（无效密钥，验证请求链路与端点可达） ────────────────
+    // ── 6. 真实 HTTP 探测（无效密钥，验证请求链路与端点可达） ────────────────
 
     private static async Task TestLiveHttp(TextWriter o)
     {
-        o.WriteLine("[7] 官方接口 HTTP 探测（使用无效密钥，预期 401/403 类鉴权错误；单次探测上限 12 秒）");
+        o.WriteLine("[6] 官方接口 HTTP 探测（使用无效密钥，预期 401/403 类鉴权错误；单次探测上限 12 秒）");
         var svc = new BalanceService(Path.Combine(Path.GetTempPath(), "tokenvault-selftest-snap.jsonl"));
 
         await Probe(o, "MiMo token_plan", ct => svc.GetMimoPlanAsync("tp-selftest-invalid-key", null, ct));
         await Probe(o, "DeepSeek user/balance", ct => svc.GetDeepseekBalanceAsync("sk-selftest-invalid-key", null, ct));
         await Probe(o, "MiMo models", async ct => (await svc.GetModelsAsync("sk-selftest-invalid-key", BalanceService.DefaultMimoSkBase, ct)).Dispose());
-        await Probe(o, "阿里云百炼 models", async ct => (await svc.GetModelsAsync("sk-selftest-invalid-key", "https://dashscope.aliyuncs.com/api/v1", ct)).Dispose());
-        await Probe(o, "百炼 quotas（默认余量接口）", async ct => { await svc.GetAlibabaPlanAsync("sk-selftest-invalid-key", null, ct); });
     }
 
     private static async Task Probe(TextWriter o, string name, Func<CancellationToken, Task> call)

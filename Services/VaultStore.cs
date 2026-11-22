@@ -126,18 +126,6 @@ public class VaultStore
         Changed?.Invoke();
     }
 
-    /// <summary>只更新 AK/SK（一次性校验通过后写回，不产生临时区旧版本记录）。</summary>
-    public void UpdateCredentials(string id, string accessKeyId, string accessKeySecret)
-    {
-        var entry = Data.Entries.FirstOrDefault(e => e.Id == id)
-                    ?? throw new InvalidOperationException("条目不存在");
-        entry.Username = accessKeyId;
-        entry.Password = accessKeySecret;
-        entry.UpdatedAt = DateTime.Now;
-        Save();
-        Changed?.Invoke();
-    }
-
     /// <summary>删除条目 → 临时区（7 天后彻底删除）。</summary>
     public void DeleteEntry(string id)
     {
@@ -147,7 +135,6 @@ public class VaultStore
         PushToTrash(entry, TrashItem.KindDeleted);
         if (Data.Settings.MimoKeyId == id) Data.Settings.MimoKeyId = "";
         if (Data.Settings.DeepseekKeyId == id) Data.Settings.DeepseekKeyId = "";
-        if (Data.Settings.AlibabaKeyId == id) Data.Settings.AlibabaKeyId = "";
         Save();
         Changed?.Invoke();
     }

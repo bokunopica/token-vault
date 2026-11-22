@@ -8,9 +8,10 @@
 - **加密保险库**：`%LOCALAPPDATA%\TokenVault\vault.json`，AES-256-GCM 认证加密，错误主密码直接被 GCM 拒绝
 - **凭据管理**：名称 / 类别 / API Key / 账号 / 密码 / 地址 / 备注 / 任意自定义字段；密码与 Key 分开掩码、分开复制
 - **临时区（7 天缓冲）**：修改保留旧版本、删除进临时区，7 天内可随时恢复，到期自动彻底删除；可提前手动清除
-- **余量查询**：MiMo Token Plan（tp- key）、DeepSeek 余额（sk- key）、阿里云 Token Plan 额度（**需要 AccessKey**：官方 OpenAPI `GetSubscriptionStats` / `ListSubscriptionSharedPackages` 采用 ACS3 签名，不支持 `sk-`/`sk-sp-` 这类 API Key；把 AK 填在「账号」、SK 填在「密码」，类别选「阿里云 AccessKey（AK/SK）」）
+- **余量查询**：MiMo Token Plan（tp- key）、DeepSeek 余额（sk- key）
 - **消耗估算**：每次查询写入本地快照，按快照增量估算今日 / 本周 / 本月消耗
 - **安全细节**：剪贴板 30 秒后自动清空（只清自己写入的值）、空闲 N 分钟自动锁定、锁定即清剪贴板
+- **不做的事**：阿里云 Token Plan 额度（官方只开放 AccessKey 签名的 OpenAPI，且个人版额度没有任何公开的 API Key 接口，故不提供）
 
 ## 开发
 

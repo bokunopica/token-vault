@@ -25,18 +25,6 @@ public class DeepseekBalance
     public bool IsAvailable { get; init; }
 }
 
-/// <summary>阿里云百炼 Token 套餐 / 资源包余量（字段按官方返回自适应解析）。</summary>
-public class AlibabaPlanInfo
-{
-    public string? PlanCode { get; init; }
-    public decimal? Total { get; init; }
-    public decimal? Used { get; init; }
-    public decimal? Remaining { get; init; }
-    public double? UsedPct { get; init; }
-    public string? Period { get; init; }
-    public string RawSnippet { get; init; } = "";
-}
-
 /// <summary>今日/本周/本月消耗估算（快照增量口径）。</summary>
 public class ConsumptionInfo
 {
@@ -58,13 +46,6 @@ public class BalanceService
     public const string DefaultMimoPlanBase = "https://token-plan-cn.xiaomimimo.com/v1";
     public const string DefaultMimoSkBase = "https://api.xiaomimimo.com/v1";
     public const string DefaultDeepseekBase = "https://api.deepseek.com";
-    public const string DefaultAlibabaBase = "https://dashscope.aliyuncs.com";
-    /// <summary>百炼网关上的额度接口（实测：无效密钥返回 401 InvalidApiKey → 路由存在），默认就用它，不用手填地址。</summary>
-    public const string DefaultAlibabaQuotaUrl = "https://dashscope.aliyuncs.com/api/v1/quotas";
-    /// <summary>千问 Token Plan 专属网关（sk-sp- 前缀密钥配套使用）。</summary>
-    public const string DefaultAlibabaTokenPlanBase = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
-    /// <summary>百炼 OpenAI 兼容的模型列表（实测：无效密钥返回 401「Incorrect API key provided」），用于连通性测试。</summary>
-    public const string AlibabaModelsPath = "/api/v1/models";
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private const double SnapshotMinIntervalSeconds = 600;
@@ -127,127 +108,6 @@ public class BalanceService
         };
     }
 
-    /// <summary>
-    /// 阿里云百炼 Token 套餐 / 资源包余量。
-    /// 官方把套餐余量放在控制台侧，没有稳定的公开 REST 端点（/api/v1/usage 等实测均 404），
-    /// 所以这里使用凭据「地址」里填写的完整查询 URL，并按常见字段名自适应解析返回 JSON。
-    /// </summary>
-    public async Task<AlibabaPlanInfo> GetAlibabaPlanAsync(string apiKey, string? queryUrl, CancellationToken ct = default)
-    {
-        var raw = (queryUrl ?? "").Trim();
-        string url;
-        if (raw.Length == 0)
-        {
-            if (KeyStartsWithTokenPlan(apiKey))
-                throw new InvalidOperationException(
-                    "千问 Token Plan 专属密钥（sk-sp-）目前没有公开的余量接口，官方只在控制台展示。"
-                    + "如果你有查询 URL，填到凭据「地址」即可；否则请在 platform.qianwenai.com 工作台查看剩余 Credits。");
-            url = DefaultAlibabaQuotaUrl;   // 地址留空就用内置默认接口
-        }
-        else if (!UrlHelper.TryNormalize(raw, out url))
-        {
-            throw new InvalidOperationException("「地址」不是合法 URL：" + raw);
-        }
-        else if (IsBareHost(url))
-        {
-            url = url.TrimEnd('/') + "/api/v1/quotas";   // 只填了域名时自动补默认路径
-        }
-        using var doc = await GetJsonAsync(url, apiKey, ct).ConfigureAwait(false);
-        return ParseAlibabaPlan(doc.RootElement);
-    }
-
-    private static bool IsBareHost(string url)
-        => Uri.TryCreate(url, UriKind.Absolute, out var u) && u.AbsolutePath.Trim('/').Length == 0;
-
-    /// <summary>sk-sp- 前缀 = 千问 Token Plan 专属密钥。</summary>
-    public static bool KeyStartsWithTokenPlan(string apiKey)
-        => apiKey.StartsWith("sk-sp", StringComparison.OrdinalIgnoreCase);
-
-    private static readonly string[] TotalKeys = { "total_credits", "total_quota", "total_tokens", "total_amount", "total", "quota", "amount" };
-    private static readonly string[] UsedKeys = { "used_credits", "used_quota", "used_tokens", "used_amount", "used", "consumed", "usage" };
-    private static readonly string[] RemainingKeys = { "remaining_credits", "remaining_quota", "remaining_tokens", "remaining_amount", "remaining", "remain", "left", "available", "balance" };
-    private static readonly string[] PlanKeys = { "plan_code", "plan_name", "plan", "package_name", "product_name", "instance_name", "name" };
-    private static readonly string[] PeriodKeys = { "period_start", "period_end", "start_at", "end_at", "start_time", "end_time", "expire_time", "expired_time" };
-
-    /// <summary>自适应解析：从任意结构的 JSON 里按常见字段名（深度优先不超过 6 层）提取总量/已用/剩余。</summary>
-    public static AlibabaPlanInfo ParseAlibabaPlan(JsonElement root)
-    {
-        decimal? total = null, used = null, remaining = null;
-        string? plan = null, periodStart = null, periodEnd = null;
-
-        var queue = new Queue<JsonElement>();
-        queue.Enqueue(root);
-        for (var depth = 0; depth < 6 && queue.Count > 0; depth++)
-        {
-            var level = queue.Count;
-            for (var i = 0; i < level; i++)
-            {
-                var el = queue.Dequeue();
-                if (el.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var item in el.EnumerateArray()) queue.Enqueue(item);
-                    continue;
-                }
-                if (el.ValueKind != JsonValueKind.Object) continue;
-
-                foreach (var prop in el.EnumerateObject())
-                {
-                    var name = Normalize(prop.Name);
-                    var v = prop.Value;
-                    if (v.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
-                    {
-                        queue.Enqueue(v);
-                        continue;
-                    }
-                    if (TryDecimal(v, out var d))
-                    {
-                        if (total == null && TotalKeys.Contains(name)) total = d;
-                        if (used == null && UsedKeys.Contains(name)) used = d;
-                        if (remaining == null && RemainingKeys.Contains(name)) remaining = d;
-                    }
-                    else if (v.ValueKind == JsonValueKind.String)
-                    {
-                        var s = v.GetString();
-                        if (string.IsNullOrWhiteSpace(s)) continue;
-                        if (plan == null && PlanKeys.Contains(name)) plan = s;
-                        if (periodStart == null && PeriodKeys.Contains(name) && name.Contains("start")) periodStart = s;
-                        if (periodEnd == null && PeriodKeys.Contains(name) && (name.Contains("end") || name.Contains("expire"))) periodEnd = s;
-                    }
-                }
-            }
-        }
-
-        // 三个数缺一个时互相补齐
-        if (total == null && used != null && remaining != null) total = used + remaining;
-        if (remaining == null && total != null && used != null) remaining = total - used;
-        if (used == null && total != null && remaining != null) used = total - remaining;
-
-        var raw = root.GetRawText();
-        return new AlibabaPlanInfo
-        {
-            PlanCode = plan,
-            Total = total,
-            Used = used,
-            Remaining = remaining,
-            UsedPct = total is > 0 && used.HasValue ? Math.Round((double)(used.Value / total.Value * 100), 1) : null,
-            Period = periodStart != null || periodEnd != null ? $"{periodStart ?? "?"} ~ {periodEnd ?? "?"}" : null,
-            RawSnippet = raw.Length > 600 ? raw[..600] + "…" : raw,
-        };
-    }
-
-    private static string Normalize(string name)
-        => name.Replace("-", "_").ToLowerInvariant();
-
-    private static bool TryDecimal(JsonElement v, out decimal d)
-    {
-        d = 0;
-        if (v.ValueKind == JsonValueKind.Number) return v.TryGetDecimal(out d);
-        if (v.ValueKind == JsonValueKind.String)
-            return decimal.TryParse(v.GetString(), System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out d);
-        return false;
-    }
-
     /// <summary>OpenAI 兼容的 /models 列表：需要鉴权且零 token 消耗，用于判断密钥是否有效。</summary>
     public async Task<JsonDocument> GetModelsAsync(string apiKey, string baseWithPath, CancellationToken ct = default)
         => await GetJsonAsync(baseWithPath.TrimEnd('/') + "/models", apiKey, ct).ConfigureAwait(false);
@@ -268,15 +128,6 @@ public class BalanceService
                 {
                     var bal = await GetDeepseekBalanceAsync(apiKey, baseUrl, ct).ConfigureAwait(false);
                     return (true, $"连接成功：余额 {bal.TotalBalance} {bal.Currency}");
-                }
-                case Models.KeyCategories.Alibaba:
-                {
-                    // sk-sp- 是千问 Token Plan 专属 Key，只在 Token Plan 网关可用；
-                    // 其它（sk-）走百炼主网关。地址里填了完整 URL 时只取域名判断不出前缀，这里优先按 Key 前缀。
-                    using var doc = KeyStartsWithTokenPlan(apiKey)
-                        ? await GetJsonAsync(DefaultAlibabaTokenPlanBase + "/models", apiKey, ct).ConfigureAwait(false)
-                        : await GetModelsAsync(apiKey, DefaultAlibabaBase + "/api/v1", ct).ConfigureAwait(false);
-                    return (true, "连接成功：密钥有效（模型列表可访问）");
                 }
                 case Models.KeyCategories.MimoSk:
                 {

@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Net.Http;
 using System.Windows.Threading;
 using TokenVault.Infrastructure;
 using TokenVault.Models;
@@ -11,7 +10,6 @@ public class BalanceViewModel : ObservableObject
 {
     private readonly VaultStore _vault;
     private readonly BalanceService _balance = new();
-    private readonly AlibabaAkService _alibabaAk = new();
     private readonly DispatcherTimer _timer;
 
     private bool _isBusy;
@@ -40,20 +38,6 @@ public class BalanceViewModel : ObservableObject
     private string _dsAvailable = "";
     private string _dsCons = "消耗估算：暂无快照数据";
     private KeyEntry? _selectedDsKey;
-
-    // ── 阿里云百炼 ─────────────────────────────────────────────────────────
-    private string _aliStatus = "选择密钥后点击“查询”";
-    private bool _aliStatusIsError;
-    private bool _aliHasData;
-    private string _aliPlanCode = "";
-    private string _aliPeriod = "";
-    private string _aliUsed = "–";
-    private string _aliTotal = "–";
-    private string _aliRemaining = "–";
-    private string _aliPct = "";
-    private double _aliProgress;
-    private string _aliRaw = "";
-    private KeyEntry? _selectedAliKey;
 
     public BalanceViewModel(VaultStore vault)
     {
@@ -89,21 +73,12 @@ public class BalanceViewModel : ObservableObject
                      .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase))
             DsKeys.Add(e);
 
-        AliKeys.Clear();
-        foreach (var e in _vault.Data.Entries
-                     .Where(e => !string.IsNullOrEmpty(e.PrimarySecret))
-                     .OrderByDescending(e => e.Category == KeyCategories.Alibaba || e.Category == KeyCategories.AliyunAk)
-                     .ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase))
-            AliKeys.Add(e);
-
         SelectedMimoKey = MimoKeys.FirstOrDefault(e => e.Id == _vault.Data.Settings.MimoKeyId) ?? MimoKeys.FirstOrDefault();
         SelectedDsKey = DsKeys.FirstOrDefault(e => e.Id == _vault.Data.Settings.DeepseekKeyId) ?? DsKeys.FirstOrDefault();
-        SelectedAliKey = AliKeys.FirstOrDefault(e => e.Id == _vault.Data.Settings.AlibabaKeyId) ?? AliKeys.FirstOrDefault();
     }
 
     public ObservableCollection<KeyEntry> MimoKeys { get; } = new();
     public ObservableCollection<KeyEntry> DsKeys { get; } = new();
-    public ObservableCollection<KeyEntry> AliKeys { get; } = new();
 
     public KeyEntry? SelectedMimoKey
     {
@@ -126,19 +101,6 @@ public class BalanceViewModel : ObservableObject
             if (SetProperty(ref _selectedDsKey, value) && value != null)
             {
                 _vault.Data.Settings.DeepseekKeyId = value.Id;
-                _vault.Save();
-            }
-        }
-    }
-
-    public KeyEntry? SelectedAliKey
-    {
-        get => _selectedAliKey;
-        set
-        {
-            if (SetProperty(ref _selectedAliKey, value) && value != null)
-            {
-                _vault.Data.Settings.AlibabaKeyId = value.Id;
                 _vault.Save();
             }
         }
@@ -190,95 +152,14 @@ public class BalanceViewModel : ObservableObject
     public string DsAvailable { get => _dsAvailable; private set => SetProperty(ref _dsAvailable, value); }
     public string DsCons { get => _dsCons; private set => SetProperty(ref _dsCons, value); }
 
-    // 阿里云百炼 绑定
-    public string AliStatus { get => _aliStatus; private set => SetProperty(ref _aliStatus, value); }
-    /// <summary>状态行是否为错误（用于把提示染红，避免"点了没反应"的错觉）。</summary>
-    public bool AliStatusIsError { get => _aliStatusIsError; private set => SetProperty(ref _aliStatusIsError, value); }
-    public bool AliHasData { get => _aliHasData; private set => SetProperty(ref _aliHasData, value); }
-    public string AliPlanCode { get => _aliPlanCode; private set => SetProperty(ref _aliPlanCode, value); }
-    public string AliPeriod { get => _aliPeriod; private set => SetProperty(ref _aliPeriod, value); }
-    public string AliUsed { get => _aliUsed; private set => SetProperty(ref _aliUsed, value); }
-    public string AliTotal { get => _aliTotal; private set => SetProperty(ref _aliTotal, value); }
-    public string AliRemaining { get => _aliRemaining; private set => SetProperty(ref _aliRemaining, value); }
-    public string AliPct { get => _aliPct; private set => SetProperty(ref _aliPct, value); }
-    public double AliProgress { get => _aliProgress; set => SetProperty(ref _aliProgress, value); }
-    public string AliRaw { get => _aliRaw; private set => SetProperty(ref _aliRaw, value); }
-
     public RelayCommand RefreshAllCommand => new(async () => await RefreshAllAsync());
     public RelayCommand QueryMimoCommand => new(async () => await QueryMimoAsync());
     public RelayCommand QueryDsCommand => new(async () => await QueryDsAsync());
-    public RelayCommand QueryAliCommand => new(async () => await QueryAliAsync());
-    public RelayCommand CheckAliCommand => new(OpenAkTest);
-
-    /// <summary>打开一次性校验对话框：绕开保险库直接测粘贴进来的 AK/SK，通过后可写回当前凭据。</summary>
-    private void OpenAkTest()
-    {
-        var key = SelectedAliKey;
-        var dlg = new Views.AkTestWindow(key?.Username, key?.Password)
-        {
-            Owner = System.Windows.Application.Current.MainWindow,
-        };
-        var ok = dlg.ShowDialog() == true && dlg.SaveRequested;
-        if (!ok) return;
-
-        if (key == null)
-        {
-            AliStatus = "校验通过，但没有选中的凭据可写回（请在添加凭据时选「阿里云 AccessKey（AK/SK）」）";
-            AliStatusIsError = true;
-            return;
-        }
-
-        try
-        {
-            _vault.UpdateCredentials(key.Id, dlg.ResultAk!, dlg.ResultSk!);
-            AliStatus = "校验通过并已保存新的 AK/SK，点「查询」即可取额度";
-            AliStatusIsError = false;
-            Diag.Log("ali ak saved from test dialog");
-        }
-        catch (Exception ex)
-        {
-            AliStatus = "保存失败：" + ex.Message;
-            AliStatusIsError = true;
-        }
-    }
-
-    /// <summary>只校验 AK/SK 这一对（STS GetCallerIdentity），不涉及百炼权限。</summary>
-    public async Task CheckAliAsync()
-    {
-        var key = SelectedAliKey;
-        if (key == null || string.IsNullOrEmpty(key.Username) || string.IsNullOrEmpty(key.Password))
-        {
-            AliStatus = "校验需要 AK/SK：账号栏填 AccessKey ID，密码栏填 AccessKey Secret";
-            AliStatusIsError = true;
-            return;
-        }
-        AliStatus = "校验中…";
-        AliStatusIsError = false;
-        IsBusy = true;
-        try
-        {
-            var msg = await _alibabaAk.CheckCredentialsAsync(key.Username, key.Password);
-            AliStatus = msg;
-            AliStatusIsError = false;
-            Diag.Log("ali ak check ok: " + msg);
-        }
-        catch (Exception ex)
-        {
-            AliStatus = "校验失败：" + ex.Message;
-            AliStatusIsError = true;
-            Diag.Log("ali ak check failed: " + ex.Message);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
 
     public async Task RefreshAllAsync()
     {
         await QueryMimoAsync();
         await QueryDsAsync();
-        await QueryAliAsync();
         LastUpdated = "最近查询：" + DateTime.Now.ToString("HH:mm:ss");
     }
 
@@ -346,74 +227,6 @@ public class BalanceViewModel : ObservableObject
         {
             DsHasData = false;
             DsStatus = "查询失败：" + ex.Message;
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
-
-    public async Task QueryAliAsync()
-    {
-        var key = SelectedAliKey;
-        if (key == null)
-        {
-            AliStatus = "没有可用凭据（添加「阿里云 AccessKey（AK/SK）」类别，AK 填账号、SK 填密码）";
-            AliStatusIsError = true;
-            AliHasData = false;
-            Diag.Log("ali query skipped: no key selected");
-            return;
-        }
-        var akMode = !string.IsNullOrEmpty(key.Username) && !string.IsNullOrEmpty(key.Password);
-        AliStatus = "查询中…";
-        AliStatusIsError = false;
-        Diag.Log($"ali query start: mode={(akMode ? "AK" : "APIKey/URL")}, prefix={(key.ApiKey.Length >= 5 ? key.ApiKey[..5] : "-")}");
-        IsBusy = true;
-        try
-        {
-            if (akMode)
-            {
-                var quota = await _alibabaAk.QueryAsync(key.Username, key.Password);
-                AliPlanCode = "来源：" + quota.Source;
-                AliPeriod = quota.PeriodStart is { } ps && quota.PeriodEnd is { } pe
-                    ? $"周期 {ps:yyyy-MM-dd} ~ {pe:yyyy-MM-dd}"
-                    : "";
-                AliUsed = quota.Used?.ToString("N0") ?? "–";
-                AliTotal = quota.Total?.ToString("N0") ?? "–";
-                AliRemaining = quota.Remaining?.ToString("N0") ?? "–";
-                AliPct = quota.UsedPct is { } ap ? $"已用 {ap}%" : "";
-                AliProgress = quota.UsedPct ?? 0;
-                AliRaw = "";
-                AliHasData = true;
-                AliStatusIsError = false;
-                AliStatus = "查询成功 " + DateTime.Now.ToString("HH:mm:ss") + "（" + quota.Source + "）";
-                Diag.Log($"ali ak query ok: total={quota.Total}, remaining={quota.Remaining}");
-            }
-            else
-            {
-                var plan = await _balance.GetAlibabaPlanAsync(key.PrimarySecret, key.BaseUrl);
-                AliPlanCode = string.IsNullOrEmpty(plan.PlanCode) ? "" : "套餐：" + plan.PlanCode;
-                AliPeriod = plan.Period ?? "";
-                AliUsed = plan.Used?.ToString("N0") ?? "–";
-                AliTotal = plan.Total?.ToString("N0") ?? "–";
-                AliRemaining = plan.Remaining?.ToString("N0") ?? "–";
-                AliPct = plan.UsedPct is { } pct ? $"已用 {pct}%" : "";
-                AliProgress = plan.UsedPct ?? 0;
-                AliRaw = plan.Total == null && plan.Used == null && plan.Remaining == null
-                    ? "未能识别出余量字段，接口原始返回：" + plan.RawSnippet
-                    : "";
-                AliHasData = true;
-                AliStatus = "查询成功 " + DateTime.Now.ToString("HH:mm:ss");
-                AliStatusIsError = false;
-                Diag.Log($"ali query ok: total={plan.Total}, used={plan.Used}, remaining={plan.Remaining}");
-            }
-        }
-        catch (Exception ex)
-        {
-            AliHasData = false;
-            AliStatusIsError = true;
-            Diag.Log("ali query failed: " + ex.Message);
-            AliStatus = "查询失败：" + ex.Message;
         }
         finally
         {
