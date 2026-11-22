@@ -285,7 +285,7 @@ public class AlibabaAkService
             Diag.Log("ali ak sign - first diff at line " + (i + 1) + ": server=[" + s + "] local=[" + o + "]");
             return "签名与服务端不一致，第一处差异：\n" + detail;
         }
-        return "规范请求两边完全一致但仍验签失败 → 可能是 Key 里混入了空格/换行，或系统代理改写了请求头。";
+        return "服务端与本机的规范请求**逐字一致**，说明请求构造没问题 —— 是 AccessKey Secret 本身不对（被截断/复制成了别的字段/已轮换）。";
     }
 
     private static JsonElement? GetData(JsonElement root)

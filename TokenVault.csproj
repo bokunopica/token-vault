@@ -9,7 +9,7 @@
     <AssemblyName>TokenVault</AssemblyName>
     <RootNamespace>TokenVault</RootNamespace>
     <ApplicationTitle>TokenVault · 令牌与密钥管家</ApplicationTitle>
-    <Version>1.1.4</Version>
+    <Version>1.1.5</Version>
     <ApplicationIcon>assets\icon.ico</ApplicationIcon>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
