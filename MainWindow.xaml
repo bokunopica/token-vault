@@ -1,0 +1,111 @@
+﻿<Window x:Class="TokenVault.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:TokenVault"
+        mc:Ignorable="d"
+        Title="TokenVault · 令牌与密钥管家" Height="720" Width="1280"
+        MinHeight="620" MinWidth="1060"
+        WindowStartupLocation="CenterScreen"
+        Foreground="{StaticResource TextBrush}"
+        Background="{StaticResource BgBrush}">
+    <Window.Resources>
+        <Style x:Key="NavBtn" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#CBD5E1"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Padding" Value="14,11"/>
+            <Setter Property="Margin" Value="0,2"/>
+            <Setter Property="FontSize" Value="13.5"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"
+                                              TextElement.Foreground="{Binding Foreground, RelativeSource={RelativeSource TemplatedParent}}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#1E293B"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="NavBtnActive" TargetType="Button" BasedOn="{StaticResource NavBtn}">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style x:Key="SideBtn" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#1E293B"/>
+            <Setter Property="Foreground" Value="#E2E8F0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Padding" Value="14,9"/>
+            <Setter Property="Margin" Value="0,3"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 侧边栏 -->
+        <Border Grid.Column="0" Background="#0F172A">
+            <DockPanel LastChildFill="False">
+                <StackPanel DockPanel.Dock="Top" Margin="20,26,20,0">
+                    <TextBlock Text="TokenVault" FontSize="21" FontWeight="Bold" Foreground="White"/>
+                    <TextBlock Text="令牌与密钥管家" Foreground="#94A3B8" FontSize="11.5" Margin="0,3,0,0"/>
+                </StackPanel>
+
+                <StackPanel DockPanel.Dock="Bottom" Margin="14,0,14,18">
+                    <TextBlock Text="空闲自动锁定" Foreground="#64748B" FontSize="11" Margin="14,0,0,3"/>
+                    <ComboBox x:Name="IdleLockBox" Margin="0,0,0,10" SelectionChanged="IdleLockBox_SelectionChanged">
+                        <ComboBoxItem Content="不自动锁定" Tag="0"/>
+                        <ComboBoxItem Content="空闲 1 分钟后锁定" Tag="1"/>
+                        <ComboBoxItem Content="空闲 5 分钟后锁定" Tag="5"/>
+                        <ComboBoxItem Content="空闲 10 分钟后锁定" Tag="10"/>
+                        <ComboBoxItem Content="空闲 15 分钟后锁定" Tag="15"/>
+                        <ComboBoxItem Content="空闲 30 分钟后锁定" Tag="30"/>
+                    </ComboBox>
+                    <Button x:Name="BtnChangePwd" Style="{StaticResource SideBtn}" Content="修改主密码"
+                            Click="BtnChangePwd_Click"/>
+                    <Button x:Name="BtnLock" Style="{StaticResource SideBtn}" Content="锁定保险库"
+                            Click="BtnLock_Click"/>
+                    <TextBlock x:Name="LockState" Foreground="#64748B" FontSize="11" Margin="14,8,0,0"
+                               Text="保险库已解锁 · 数据仅存本机"/>
+                </StackPanel>
+
+                <StackPanel DockPanel.Dock="Top" Margin="14,30,14,0">
+                    <Button x:Name="NavBalance" Style="{StaticResource NavBtnActive}" Content="余量查询"
+                            Click="Nav_Click" Tag="balance"/>
+                    <Button x:Name="NavKeys" Style="{StaticResource NavBtn}" Content="密钥管理"
+                            Click="Nav_Click" Tag="keys"/>
+                    <Button x:Name="NavTrash" Style="{StaticResource NavBtn}" Content="临时区"
+                            Click="Nav_Click" Tag="trash"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- 主内容 -->
+        <Grid Grid.Column="1" Margin="30,24,30,26">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0">
+                <TextBlock x:Name="PageTitle" Style="{StaticResource H1}" Text="余量查询"/>
+                <TextBlock x:Name="PageSubtitle" Style="{StaticResource Muted}" Margin="0,5,0,0"
+                           Text="MiMo Token Plan 使用程度与 DeepSeek 余额，均为官方接口实时查询"/>
+            </StackPanel>
+            <ContentControl x:Name="PageHost" Grid.Row="1" Margin="0,18,0,0"/>
+        </Grid>
+    </Grid>
+</Window>
