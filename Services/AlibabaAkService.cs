@@ -199,11 +199,15 @@ public class AlibabaAkService
         req.Headers.TryAddWithoutValidation("Authorization", authorization);
         req.Headers.TryAddWithoutValidation("Accept", "application/json");
 
+        Diag.Log($"ali ak req: GET {url}");
+        foreach (var kv in req.Headers) Diag.Log($"ali ak hdr: {kv.Key}={string.Join(",", kv.Value)}");
+        Diag.Log("ali ak auth: ACS3-HMAC-SHA256 Credential=" + ak.Trim()[..Math.Min(6, ak.Trim().Length)] + "…,Signature=…" + signature[^8..]);
+
         using var resp = await Http.SendAsync(req, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 
         if (!resp.IsSuccessStatusCode)
-            throw new InvalidOperationException(DescribeHttpError((int)resp.StatusCode, body, canonicalRequest));
+            throw new InvalidOperationException(DescribeHttpError((int)resp.StatusCode, body, canonicalRequest, ak, sk));
 
         return JsonDocument.Parse(body);
     }
@@ -221,7 +225,7 @@ public class AlibabaAkService
         return $"{method}\n{path}\n{canonicalQuery}\n{sb}\n{signedHeaders}\n{hashedPayload}";
     }
 
-    private static string DescribeHttpError(int status, string body, string canonicalRequest)
+    private static string DescribeHttpError(int status, string body, string canonicalRequest, string ak, string sk)
     {
         string? code = null, message = null, requestId = null;
         try
@@ -244,12 +248,44 @@ public class AlibabaAkService
         if (message?.Contains("Forbidden") == true || code is "Forbidden" or "NoPermission")
             return "该 AccessKey 没有调用权限：给对应 RAM 用户授予 AliyunTokenPlanReadOnlyAccess（+ AliyunBSSReadOnlyAccess）。";
         if (message?.Contains("does not match our calculation") == true)
-            return text + "\n本机签名用的规范请求：\n" + canonicalRequest;
+            return text + "\n" + DiffServerCanonical(message, canonicalRequest)
+                   + $"\n（本地 AK 长度 {ak.Trim().Length}，SK 长度 {sk.Trim().Length}；AK 通常 24 位以 LTAI 开头，SK 通常 30 位）";
         if (string.IsNullOrEmpty(body))
             return text;
 
         var snippet = body.Length > 400 ? body[..400] + "…" : body;
         return text + "\n" + snippet;
+    }
+
+    /// <summary>
+    /// 把服务端回显的 canonical request 与本机签的逐行对比：给出第一处差异，
+    /// 差异明细同时写进 app.log（截图/复制都不会再破坏内容）。
+    /// </summary>
+    private static string DiffServerCanonical(string serverMessage, string ours)
+    {
+        const string marker = "server CanonicalRequest is [";
+        var start = serverMessage.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return "本机规范请求：\n" + ours;
+        start += marker.Length;
+        var end = serverMessage.LastIndexOf(']');
+        if (end <= start) return "本机规范请求：\n" + ours;
+        var server = serverMessage[start..end].Replace("\r\n", "\n");
+
+        Diag.Log("ali ak sign - server canonical: " + server.Replace("\n", "\\n"));
+        Diag.Log("ali ak sign - local  canonical: " + ours.Replace("\n", "\\n"));
+
+        var sLines = server.Split('\n');
+        var oLines = ours.Split('\n');
+        for (var i = 0; i < Math.Max(sLines.Length, oLines.Length); i++)
+        {
+            var s = i < sLines.Length ? sLines[i] : "(缺)";
+            var o = i < oLines.Length ? oLines[i] : "(缺)";
+            if (s == o) continue;
+            var detail = $"服务端第 {i + 1} 行：{s}\n本机第 {i + 1} 行：{o}";
+            Diag.Log("ali ak sign - first diff at line " + (i + 1) + ": server=[" + s + "] local=[" + o + "]");
+            return "签名与服务端不一致，第一处差异：\n" + detail;
+        }
+        return "规范请求两边完全一致但仍验签失败 → 可能是 Key 里混入了空格/换行，或系统代理改写了请求头。";
     }
 
     private static JsonElement? GetData(JsonElement root)
